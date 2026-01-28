@@ -121,6 +121,10 @@ function OnboardingForm() {
     });
 
     const [submitted, setSubmitted] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbycAepzas1nrNReDAMkHSUR3wv45KXay-cFWVfTMu7f0z2UQnpPJyn5qVE7pXfWPxpmhQ/exec';
 
     const handleInputChange = (e) => {
         const { name, value } = e.target;
@@ -145,10 +149,64 @@ function OnboardingForm() {
         }));
     };
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
-        console.log('Onboarding submitted:', formData);
-        setSubmitted(true);
+        setLoading(true);
+        setError(null);
+
+        try {
+            // Get license names
+            const licenseNames = formData.selectedLicenses
+                .map(id => M365_LICENSES.find(l => l.id === id)?.name)
+                .filter(Boolean)
+                .join(', ');
+
+            // Get permission names
+            const permissionNames = formData.selectedPermissions
+                .map(id => D365_PERMISSIONS.find(p => p.id === id)?.name)
+                .filter(Boolean)
+                .join(', ');
+
+            // Prepare data for Google Sheets
+            const submissionData = {
+                formType: 'Onboarding',
+                timestamp: new Date().toISOString(),
+                firstName: formData.firstName,
+                lastName: formData.lastName,
+                email: formData.email,
+                department: formData.department,
+                jobTitle: formData.jobTitle,
+                manager: formData.manager,
+                startDate: formData.startDate,
+                employeeType: formData.employeeType,
+                workLocation: formData.workLocation,
+                licenses: licenseNames,
+                permissions: permissionNames,
+                notes: formData.notes
+            };
+
+            console.log('Submitting to Google Sheets:', submissionData);
+
+            // Send to Google Sheets webhook
+            const response = await fetch(WEBHOOK_URL, {
+                method: 'POST',
+                mode: 'no-cors', // Required for Google Apps Script
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(submissionData)
+            });
+
+            // Note: With no-cors mode, we can't read the response
+            // We'll assume success if no error is thrown
+            console.log('Onboarding submitted successfully');
+            setSubmitted(true);
+        } catch (err) {
+            console.error('Error submitting form:', err);
+            setError('Failed to submit the form. Please try again.');
+        } finally {
+            setLoading(false);
+        }
     };
 
     if (submitted) {
@@ -439,11 +497,24 @@ function OnboardingForm() {
 
             {/* Form Actions */}
             <div className="form-actions">
-                <button type="button" className="btn btn-secondary">
+                {error && (
+                    <div style={{
+                        width: '100%',
+                        padding: '12px 16px',
+                        backgroundColor: '#fee',
+                        border: '1px solid #fcc',
+                        borderRadius: '8px',
+                        color: '#c33',
+                        marginBottom: '16px'
+                    }}>
+                        {error}
+                    </div>
+                )}
+                <button type="button" className="btn btn-secondary" disabled={loading}>
                     Save as Draft
                 </button>
-                <button type="submit" className="btn btn-primary btn-lg">
-                    Submit Onboarding Request
+                <button type="submit" className="btn btn-primary btn-lg" disabled={loading}>
+                    {loading ? 'Submitting...' : 'Submit Onboarding Request'}
                 </button>
             </div>
         </form>
