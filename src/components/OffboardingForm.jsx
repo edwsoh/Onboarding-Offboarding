@@ -1,13 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import './OffboardingForm.css';
-
-const SAMPLE_EMPLOYEES = [
-    { id: 1, name: 'John Smith', email: 'john.smith@hunterdouglas.com', department: 'Sales', title: 'Sales Manager' },
-    { id: 2, name: 'Sarah Johnson', email: 'sarah.johnson@hunterdouglas.com', department: 'Marketing', title: 'Marketing Specialist' },
-    { id: 3, name: 'Michael Chen', email: 'michael.chen@hunterdouglas.com', department: 'IT', title: 'Software Developer' },
-    { id: 4, name: 'Emily Davis', email: 'emily.davis@hunterdouglas.com', department: 'Finance', title: 'Financial Analyst' },
-    { id: 5, name: 'David Wilson', email: 'david.wilson@hunterdouglas.com', department: 'Operations', title: 'Operations Coordinator' }
-];
 
 const M365_LICENSES = [
     { id: 'm365-e3', name: 'Microsoft 365 E3' },
@@ -53,6 +45,9 @@ const OFFBOARDING_REASONS = [
 function OffboardingForm() {
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedEmployee, setSelectedEmployee] = useState(null);
+    const [employees, setEmployees] = useState([]);
+    const [loadingEmployees, setLoadingEmployees] = useState(false);
+    const [employeeSearchError, setEmployeeSearchError] = useState(null);
     const [formData, setFormData] = useState({
         lastWorkingDay: '',
         offboardingReason: '',
@@ -67,11 +62,59 @@ function OffboardingForm() {
     });
 
     const [submitted, setSubmitted] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
 
-    const filteredEmployees = SAMPLE_EMPLOYEES.filter(emp =>
-        emp.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        emp.email.toLowerCase().includes(searchTerm.toLowerCase())
-    );
+    const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbycAepzas1nrNReDAMkHSUR3wv45KXay-cFWVfTMu7f0z2UQnpPJyn5qVE7pXfWPxpmhQ/exec';
+
+    // Fetch employees from Google Sheets when search term changes
+    useEffect(() => {
+        const fetchEmployees = async () => {
+            if (searchTerm.length < 3) {
+                setEmployees([]);
+                return;
+            }
+
+            setLoadingEmployees(true);
+            setEmployeeSearchError(null);
+
+            try {
+                const response = await fetch(`${WEBHOOK_URL}?action=searchEmployees&query=${encodeURIComponent(searchTerm)}`);
+
+                if (!response.ok) {
+                    throw new Error(`HTTP Error: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    setEmployees(data.employees || []);
+                } else {
+                    setEmployeeSearchError(`Google Script Error: ${data.message || 'Unknown error'}`);
+                    setEmployees([]);
+                }
+            } catch (err) {
+                console.error('Fetch Error:', err);
+                if (err.name === 'SyntaxError') {
+                    setEmployeeSearchError('Received invalid data from Google Sheets. Ensure the script is deployed as a Web App returning JSON.');
+                } else {
+                    setEmployeeSearchError('Unable to connect to Google Sheets. Check your network, firewall, or if "Who has access" is set to "Anyone" in the script deployment.');
+                }
+                setEmployees([]);
+            } finally {
+                setLoadingEmployees(false);
+            }
+        };
+
+        // Debounce the search
+        const timeoutId = setTimeout(() => {
+            fetchEmployees();
+        }, 500);
+
+        return () => clearTimeout(timeoutId);
+    }, [searchTerm, WEBHOOK_URL]);
+
+    const filteredEmployees = employees;
 
     const handleInputChange = (e) => {
         const { name, value, type, checked } = e.target;
@@ -104,10 +147,72 @@ function OffboardingForm() {
         }));
     };
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
-        console.log('Offboarding submitted:', { employee: selectedEmployee, ...formData });
-        setSubmitted(true);
+        setLoading(true);
+        setError(null);
+
+        try {
+            // Get license names
+            const licenseNames = formData.licensesToRevoke
+                .map(id => M365_LICENSES.find(l => l.id === id)?.name)
+                .filter(Boolean)
+                .join(', ');
+
+            // Get permission names
+            const permissionNames = formData.permissionsToRemove
+                .map(id => D365_PERMISSIONS.find(p => p.id === id)?.name)
+                .filter(Boolean)
+                .join(', ');
+
+            // Get equipment names
+            const equipmentNames = formData.equipmentToReturn
+                .map(id => EQUIPMENT_ITEMS.find(e => e.id === id)?.name)
+                .filter(Boolean)
+                .join(', ');
+
+            // Prepare data for Google Sheets
+            const submissionData = {
+                formType: 'Offboarding',
+                timestamp: new Date().toISOString(),
+                employeeName: selectedEmployee?.name,
+                employeeEmail: selectedEmployee?.email,
+                employeeDepartment: selectedEmployee?.department,
+                employeeTitle: selectedEmployee?.title,
+                lastWorkingDay: formData.lastWorkingDay,
+                offboardingReason: formData.offboardingReason,
+                forwardEmailTo: formData.forwardEmailTo,
+                licensesToRevoke: licenseNames,
+                permissionsToRemove: permissionNames,
+                equipmentToReturn: equipmentNames,
+                revokeVPN: formData.revokeVPN ? 'Yes' : 'No',
+                revokeBuilding: formData.revokeBuilding ? 'Yes' : 'No',
+                archiveMailbox: formData.archiveMailbox ? 'Yes' : 'No',
+                notes: formData.notes
+            };
+
+            console.log('Submitting to Google Sheets:', submissionData);
+
+            // Send to Google Sheets webhook
+            const response = await fetch(WEBHOOK_URL, {
+                method: 'POST',
+                mode: 'no-cors', // Required for Google Apps Script
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(submissionData)
+            });
+
+            // Note: With no-cors mode, we can't read the response
+            // We'll assume success if no error is thrown
+            console.log('Offboarding submitted successfully');
+            setSubmitted(true);
+        } catch (err) {
+            console.error('Error submitting form:', err);
+            setError('Failed to submit the form. Please try again.');
+        } finally {
+            setLoading(false);
+        }
     };
 
     if (submitted) {
@@ -182,20 +287,51 @@ function OffboardingForm() {
                 </div>
 
                 <div className="form-group">
-                    <label className="form-label" htmlFor="employeeSearch">Search Employee</label>
+                    <label className="form-label" htmlFor="employeeSearch">Search Employee by Email</label>
                     <input
-                        type="text"
+                        type="email"
                         id="employeeSearch"
                         className="form-input"
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
-                        placeholder="Search by name or email..."
+                        placeholder="Enter employee email address (e.g., john.doe@hunterdouglas.com)"
                     />
+                    <small style={{ color: '#666', fontSize: '13px', marginTop: '4px', display: 'block' }}>
+                        💡 Type the employee's email address to search
+                    </small>
                 </div>
 
                 {searchTerm && !selectedEmployee && (
                     <div className="employee-results">
-                        {filteredEmployees.length > 0 ? (
+                        {loadingEmployees ? (
+                            <div className="loading-message" style={{
+                                padding: '20px',
+                                textAlign: 'center',
+                                color: '#666'
+                            }}>
+                                🔄 Searching employees...
+                            </div>
+                        ) : employeeSearchError ? (
+                            <div className="error-message" style={{
+                                padding: '20px',
+                                textAlign: 'center',
+                                color: '#c33',
+                                backgroundColor: '#fee',
+                                borderRadius: '8px',
+                                border: '1px solid #fcc'
+                            }}>
+                                ⚠️ {employeeSearchError}
+                            </div>
+                        ) : searchTerm.length < 3 ? (
+                            <div className="hint-message" style={{
+                                padding: '20px',
+                                textAlign: 'center',
+                                color: '#666',
+                                fontSize: '14px'
+                            }}>
+                                💡 Type at least 3 characters of the email address to search
+                            </div>
+                        ) : filteredEmployees.length > 0 ? (
                             filteredEmployees.map(emp => (
                                 <div
                                     key={emp.id}
@@ -203,6 +339,7 @@ function OffboardingForm() {
                                     onClick={() => {
                                         setSelectedEmployee(emp);
                                         setSearchTerm('');
+                                        setEmployees([]);
                                     }}
                                 >
                                     <div className="employee-avatar">
@@ -216,7 +353,16 @@ function OffboardingForm() {
                                 </div>
                             ))
                         ) : (
-                            <div className="no-results">No employees found matching "{searchTerm}"</div>
+                            <div className="no-results" style={{
+                                padding: '20px',
+                                textAlign: 'center',
+                                color: '#666'
+                            }}>
+                                No employees found matching "{searchTerm}"
+                                <div style={{ fontSize: '14px', marginTop: '8px', color: '#999' }}>
+                                    Make sure the employee has been onboarded first
+                                </div>
+                            </div>
                         )}
                     </div>
                 )}
@@ -454,11 +600,24 @@ function OffboardingForm() {
 
                     {/* Form Actions */}
                     <div className="form-actions">
-                        <button type="button" className="btn btn-secondary">
+                        {error && (
+                            <div style={{
+                                width: '100%',
+                                padding: '12px 16px',
+                                backgroundColor: '#fee',
+                                border: '1px solid #fcc',
+                                borderRadius: '8px',
+                                color: '#c33',
+                                marginBottom: '16px'
+                            }}>
+                                {error}
+                            </div>
+                        )}
+                        <button type="button" className="btn btn-secondary" disabled={loading}>
                             Save as Draft
                         </button>
-                        <button type="submit" className="btn btn-primary btn-lg">
-                            Submit Offboarding Request
+                        <button type="submit" className="btn btn-primary btn-lg" disabled={loading}>
+                            {loading ? 'Submitting...' : 'Submit Offboarding Request'}
                         </button>
                     </div>
                 </>
